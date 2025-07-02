@@ -717,12 +717,19 @@ async def test_webhook(ctx):
 
 @bot.event
 async def on_message(message):
-    """Enhanced message handler with detailed poll debugging"""
+    """Enhanced message handler with proper command processing"""
     if message.author.bot:
         return
     
     if message.channel.id == DISCORD_CHANNEL_ID:
         print(f"📨 Processing message from {message.author.display_name}...")
+        
+        # IMPORTANT: Check if this is a bot command FIRST
+        # Don't forward commands to GroupMe
+        if message.content.startswith('!'):
+            print(f"🤖 Bot command detected: {message.content}")
+            await bot.process_commands(message)
+            return  # Exit early for commands
         
         # Enhanced poll detection with multiple checks
         has_poll = False
@@ -803,8 +810,6 @@ async def on_message(message):
                 await handle_text_based_poll(message)
         
         # Continue with normal message processing...
-        # [Rest of the existing message handling code remains the same]
-        
         # Store message for threading context
         recent_messages[message.channel.id].append({
             'author': message.author.display_name,
@@ -847,6 +852,7 @@ async def on_message(message):
                 await send_to_groupme(message.content, message.author.display_name, 
                                     reply_context=reply_context)
     
+    # Process commands for messages not in the monitored channel too
     await bot.process_commands(message)
 
 async def handle_text_based_poll(message):
