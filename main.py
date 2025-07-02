@@ -676,46 +676,134 @@ async def on_ready():
     print(f'☁️ Enhanced bot with poll support is ready and running on Google Cloud Run!')
     print(f'🌐 Server running on port: {PORT}')
 
+@bot.command(name='webhooktest')
+async def test_webhook(ctx):
+    """Test if GroupMe webhook is properly configured"""
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        await ctx.send("❌ This command only works in the monitored channel.")
+        return
+        
+    await ctx.send("🔍 **Testing GroupMe Webhook Configuration**")
+    
+    # Show expected webhook URL
+    expected_webhook = f"https://your-service-url.a.run.app/groupme/webhook"
+    await ctx.send(f"📋 **Expected webhook URL format:** `{expected_webhook}`")
+    await ctx.send("📋 **Replace 'your-service-url' with your actual Cloud Run URL**")
+    
+    # Instructions to verify webhook
+    instructions = """
+🛠️ **To verify your webhook is configured:**
+
+1. **Find your Cloud Run URL:**
+   • Go to Google Cloud Console → Cloud Run
+   • Copy your Python bot service URL
+   
+2. **Set GroupMe webhook:**
+   • Go to https://dev.groupme.com/
+   • Edit your bot
+   • Set Callback URL to: `https://your-url.a.run.app/groupme/webhook`
+   
+3. **Test webhook:**
+   • Send a message in GroupMe
+   • Check Cloud Run logs for: `📨 GroupMe webhook received:`
+   
+4. **Check logs with:**
+   ```
+   gcloud logging read "resource.type=cloud_run_revision" --limit 10
+   ```
+"""
+    
+    await ctx.send(instructions)
+
 @bot.event
 async def on_message(message):
+    """Enhanced message handler with detailed poll debugging"""
     if message.author.bot:
         return
     
     if message.channel.id == DISCORD_CHANNEL_ID:
         print(f"📨 Processing message from {message.author.display_name}...")
         
-        # Debug: Check message attributes
-        print(f"🔍 Message type: {type(message)}")
-        print(f"🔍 Has poll attribute: {hasattr(message, 'poll')}")
+        # Enhanced poll detection with multiple checks
+        has_poll = False
+        poll_obj = None
         
-        # Check multiple ways to detect polls
-        if hasattr(message, 'poll') and message.poll is not None:
-            print(f"📊 POLL DETECTED! Type: {type(message.poll)}")
-            print(f"📊 Poll question: {message.poll.question}")
-            print(f"📊 Poll answers: {[str(answer) for answer in message.poll.answers]}")
+        # Method 1: Check if message has poll attribute
+        if hasattr(message, 'poll'):
+            print(f"🔍 Message has poll attribute: {message.poll is not None}")
+            if message.poll is not None:
+                has_poll = True
+                poll_obj = message.poll
+                print(f"✅ Poll detected via message.poll")
+        
+        # Method 2: Check message type
+        if hasattr(message, 'type'):
+            print(f"🔍 Message type: {message.type}")
+            if str(message.type) == 'MessageType.poll':
+                has_poll = True
+                print(f"✅ Poll detected via message type")
+        
+        # Method 3: Check for poll in message content/embeds
+        if message.embeds:
+            print(f"🔍 Message has {len(message.embeds)} embeds")
+            for embed in message.embeds:
+                if 'poll' in str(embed.to_dict()).lower():
+                    print(f"🔍 Found poll-related embed")
+        
+        if has_poll and poll_obj:
+            print(f"📊 POLL DETECTED! Processing...")
+            print(f"📊 Poll object type: {type(poll_obj)}")
             
+            # Extract and log poll details
             try:
-                success = await create_groupme_poll_from_discord(message.poll, message.author.display_name, message)
+                if hasattr(poll_obj, 'question'):
+                    if hasattr(poll_obj.question, 'text'):
+                        question = poll_obj.question.text
+                    else:
+                        question = str(poll_obj.question)
+                    print(f"📊 Poll question: {question}")
+                
+                if hasattr(poll_obj, 'answers'):
+                    options = [str(answer.text) if hasattr(answer, 'text') else str(answer) for answer in poll_obj.answers]
+                    print(f"📊 Poll options: {options}")
+                elif hasattr(poll_obj, 'options'):
+                    options = [str(option.text) if hasattr(option, 'text') else str(option) for option in poll_obj.options]
+                    print(f"📊 Poll options: {options}")
+                
+                # Attempt to create GroupMe poll
+                success = await create_groupme_poll_from_discord(poll_obj, message.author.display_name, message)
                 if success:
                     await message.add_reaction("✅")
-                    print("✅ Poll creation successful")
+                    print("✅ Poll forwarding successful")
                 else:
                     await message.add_reaction("❌")
-                    print("❌ Poll creation failed")
+                    print("❌ Poll forwarding failed")
+                    # Send debug message
+                    await message.reply("❌ Failed to create GroupMe poll. Check logs for details.")
+                    
             except Exception as e:
-                print(f"❌ Error creating GroupMe poll: {e}")
+                print(f"❌ Error processing poll: {e}")
+                import traceback
+                print(f"❌ Traceback: {traceback.format_exc()}")
                 await message.add_reaction("❌")
-                # Send error info to Discord for debugging
-                await message.reply(f"Poll error: {str(e)[:100]}")
+                await message.reply(f"❌ Poll error: {str(e)[:100]}")
             return
         
-        # Check if message content looks like a poll
+        # If no poll detected, log for debugging
+        if not has_poll:
+            print(f"🔍 No poll detected in message from {message.author.display_name}")
+            print(f"🔍 Message content: {message.content[:100]}...")
+        
+        # Check if message content looks like a poll command or text
         if message.content:
             poll_keywords = ['poll:', '📊', 'vote:', 'survey:']
             content_lower = message.content.lower()
             if any(keyword in content_lower for keyword in poll_keywords):
-                print(f"📊 Potential poll detected in content: {message.content[:100]}")
+                print(f"📊 Potential text-based poll detected: {message.content[:100]}")
                 await handle_text_based_poll(message)
+        
+        # Continue with normal message processing...
+        # [Rest of the existing message handling code remains the same]
         
         # Store message for threading context
         recent_messages[message.channel.id].append({
@@ -793,53 +881,215 @@ async def handle_text_based_poll(message):
 
 @bot.command(name='polltest')
 async def poll_test(ctx):
-    """Test Discord poll creation capabilities"""
+    """Test Discord poll creation capabilities with detailed debugging"""
     if ctx.channel.id == DISCORD_CHANNEL_ID:
-        await ctx.send("Testing Discord poll support...")
+        await ctx.send("🔍 Testing Discord poll support step by step...")
         
         # Check if discord.py supports polls
         try:
             import discord
-            print(f"Discord.py version: {discord.__version__}")
+            await ctx.send(f"📋 Discord.py version: **{discord.__version__}**")
             
             # Check if Poll class exists
             if hasattr(discord, 'Poll'):
-                await ctx.send(f"✅ Discord.py version {discord.__version__} - Poll class available")
+                await ctx.send("✅ Poll class found in discord.py")
                 
-                # Try to create a simple poll
-                try:
-                    poll_options = [
-                        discord.PollMedia(text="Yes"),
-                        discord.PollMedia(text="No")
-                    ]
+                # Check if PollMedia exists
+                if hasattr(discord, 'PollMedia'):
+                    await ctx.send("✅ PollMedia class found")
                     
-                    poll = discord.Poll(
-                        question="Can you see this poll?",
-                        options=poll_options,
-                        multiple=False,
-                        duration=1
-                    )
-                    
-                    poll_msg = await ctx.send(poll=poll)
-                    await ctx.send("✅ Poll creation successful! Check if it forwards to GroupMe.")
-                    
-                    # Debug poll object
-                    print(f"🔍 Created poll object: {type(poll)}")
-                    print(f"🔍 Poll message: {type(poll_msg)}")
-                    print(f"🔍 Poll message has poll: {hasattr(poll_msg, 'poll')}")
-                    
-                except Exception as e:
-                    await ctx.send(f"❌ Poll creation failed: {e}")
-                    print(f"Poll creation error: {e}")
+                    # Try to create a simple poll
+                    try:
+                        poll_options = [
+                            discord.PollMedia(text="Yes", emoji="✅"),
+                            discord.PollMedia(text="No", emoji="❌")
+                        ]
+                        
+                        poll = discord.Poll(
+                            question="🧪 Test: Can you see this Discord poll?",
+                            options=poll_options,
+                            multiple=False,
+                            duration=1  # 1 hour
+                        )
+                        
+                        await ctx.send("✅ Poll object created successfully")
+                        
+                        # Send the poll
+                        poll_msg = await ctx.send(poll=poll)
+                        await ctx.send("✅ Discord poll sent successfully!")
+                        
+                        # Debug poll message attributes
+                        await ctx.send(f"🔍 Poll message ID: `{poll_msg.id}`")
+                        await ctx.send(f"🔍 Poll message has poll attribute: `{hasattr(poll_msg, 'poll')}`")
+                        
+                        if hasattr(poll_msg, 'poll') and poll_msg.poll:
+                            await ctx.send("✅ Poll message contains poll data")
+                            
+                            # Try to trigger poll forwarding manually
+                            await ctx.send("🔄 Attempting to forward to GroupMe...")
+                            
+                            try:
+                                success = await create_groupme_poll_from_discord(
+                                    poll_msg.poll, 
+                                    ctx.author.display_name, 
+                                    poll_msg
+                                )
+                                if success:
+                                    await ctx.send("✅ **Poll forwarded to GroupMe successfully!**")
+                                else:
+                                    await ctx.send("❌ **Poll forwarding to GroupMe failed**")
+                            except Exception as e:
+                                await ctx.send(f"❌ **Poll forwarding error:** `{str(e)}`")
+                        else:
+                            await ctx.send("❌ Poll message does not contain poll data")
+                            
+                    except Exception as e:
+                        await ctx.send(f"❌ **Failed to create Discord poll:** `{str(e)}`")
+                        import traceback
+                        print(f"Poll creation error: {traceback.format_exc()}")
+                        
+                else:
+                    await ctx.send("❌ PollMedia class not found - discord.py version too old")
                     
             else:
-                await ctx.send(f"❌ Discord.py version {discord.__version__} - Poll class not available")
-                await ctx.send("You may need to update discord.py: `pip install discord.py>=2.3.0`")
+                await ctx.send("❌ Poll class not found - discord.py version too old")
+                await ctx.send("💡 **Solution:** Update discord.py: `pip install discord.py>=2.3.0`")
                 
         except Exception as e:
-            await ctx.send(f"❌ Error checking Discord.py: {e}")
+            await ctx.send(f"❌ **Error checking Discord.py:** `{str(e)}`")
+            
     else:
         await ctx.send("❌ This command only works in the monitored channel.")
+
+@bot.command(name='groupmetest')
+async def test_groupme_polls(ctx):
+    """Test GroupMe poll API access"""
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        await ctx.send("❌ This command only works in the monitored channel.")
+        return
+        
+    await ctx.send("🔍 Testing GroupMe poll API access...")
+    
+    # Check environment variables
+    if not GROUPME_ACCESS_TOKEN:
+        await ctx.send("❌ **GROUPME_ACCESS_TOKEN not set** - Required for poll API")
+        return
+    else:
+        await ctx.send("✅ GROUPME_ACCESS_TOKEN is set")
+        
+    if not GROUPME_GROUP_ID:
+        await ctx.send("❌ **GROUPME_GROUP_ID not set** - Required for poll API")
+        return
+    else:
+        await ctx.send(f"✅ GROUPME_GROUP_ID is set: `{GROUPME_GROUP_ID}`")
+    
+    # Test basic GroupMe API access
+    await ctx.send("🔍 Testing basic GroupMe API access...")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Test getting group info
+            async with session.get(f"{GROUPME_GROUPS_URL}?token={GROUPME_ACCESS_TOKEN}") as response:
+                if response.status == 200:
+                    group_data = await response.json()
+                    group_name = group_data.get('response', {}).get('name', 'Unknown')
+                    await ctx.send(f"✅ **GroupMe API access successful**")
+                    await ctx.send(f"📋 Group name: **{group_name}**")
+                else:
+                    await ctx.send(f"❌ **GroupMe API failed:** Status {response.status}")
+                    error_text = await response.text()
+                    await ctx.send(f"Error: `{error_text[:200]}...`")
+                    return
+                    
+    except Exception as e:
+        await ctx.send(f"❌ **GroupMe API error:** `{str(e)}`")
+        return
+    
+    # Test poll creation API
+    await ctx.send("🔍 Testing GroupMe poll creation API...")
+    
+    try:
+        # Create a test poll
+        poll_payload = {
+            "subject": "🧪 API Test Poll",
+            "options": [
+                {"title": "Test Option 1"},
+                {"title": "Test Option 2"}
+            ],
+            "expiration": int(time.time()) + (24 * 60 * 60),  # 24 hours
+            "type": "single",
+            "visibility": "public"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{GROUPME_POLLS_CREATE_URL}?token={GROUPME_ACCESS_TOKEN}",
+                json=poll_payload,
+                headers={'Content-Type': 'application/json'}
+            ) as response:
+                response_text = await response.text()
+                
+                if response.status == 201:
+                    poll_data = await response.json()
+                    poll_id = poll_data.get('poll', {}).get('data', {}).get('id', 'Unknown')
+                    await ctx.send(f"✅ **GroupMe poll created successfully!**")
+                    await ctx.send(f"📋 Poll ID: `{poll_id}`")
+                    await ctx.send("🎉 **Poll API is working correctly!**")
+                else:
+                    await ctx.send(f"❌ **GroupMe poll creation failed:** Status {response.status}")
+                    await ctx.send(f"Response: `{response_text[:300]}...`")
+                    
+                    # Common error diagnostics
+                    if response.status == 401:
+                        await ctx.send("💡 **Error 401:** Invalid access token")
+                    elif response.status == 403:
+                        await ctx.send("💡 **Error 403:** Access token doesn't have poll permissions")
+                    elif response.status == 404:
+                        await ctx.send("💡 **Error 404:** Invalid group ID or poll endpoint")
+                        
+    except Exception as e:
+        await ctx.send(f"❌ **Poll creation test error:** `{str(e)}`")
+
+@bot.command(name='debugenv')
+async def debug_environment(ctx):
+    """Show detailed environment debug info"""
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        await ctx.send("❌ This command only works in the monitored channel.")
+        return
+        
+    # Don't show actual tokens, just their presence/format
+    token_preview = GROUPME_ACCESS_TOKEN[:10] + "..." if GROUPME_ACCESS_TOKEN else "Not set"
+    
+    debug_info = f"""🔍 **Detailed Environment Debug**
+
+**Discord Bot:**
+• Bot Token: {'✅ Set' if DISCORD_BOT_TOKEN else '❌ Missing'}
+• Channel ID: `{DISCORD_CHANNEL_ID}`
+• Bot Ready: {bot_status['ready']}
+
+**GroupMe Configuration:**
+• Bot ID: {'✅ Set' if GROUPME_BOT_ID else '❌ Missing'}
+• Access Token: {'✅ Set' if GROUPME_ACCESS_TOKEN else '❌ Missing'}
+• Token Preview: `{token_preview}`
+• Group ID: {'✅ Set' if GROUPME_GROUP_ID else '❌ Missing'}
+• Group ID Value: `{GROUPME_GROUP_ID}`
+
+**API Endpoints:**
+• Poll Create: `{GROUPME_POLLS_CREATE_URL}`
+• Poll Show: `{GROUPME_POLLS_SHOW_URL}`
+• Messages: `{GROUPME_MESSAGES_URL}`
+
+**Tracked Data:**
+• Active Polls: {len(active_polls)}
+• Poll Mapping: {len(poll_mapping)}
+• GroupMe Poll Mapping: {len(groupme_poll_mapping)}
+
+**Next Steps:**
+1. Run `!groupmetest` to test GroupMe API
+2. Run `!polltest` to test Discord polls
+3. Try `!nativepoll Test? Yes, No` after tests pass"""
+
+    await ctx.send(debug_info)
 
 @bot.command(name='textpoll')
 async def text_poll(ctx, *, poll_text):
