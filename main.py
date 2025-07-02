@@ -1,3 +1,6 @@
+print("🔥 PYTHON APP STARTING!")
+print("🔥 ALL IMPORTS SUCCESSFUL!")
+
 import discord
 import aiohttp
 import asyncio
