@@ -17,7 +17,7 @@ GROUPME_BOT_ID = os.getenv("GROUPME_BOT_ID")
 GROUPME_ACCESS_TOKEN = os.getenv("GROUPME_ACCESS_TOKEN")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 GROUPME_GROUP_ID = os.getenv("GROUPME_GROUP_ID")
-PORT = int(os.getenv("PORT", "8000"))
+PORT = int(os.getenv("PORT", "8080"))  # Cloud Run default
 
 # GroupMe API endpoints
 GROUPME_POST_URL = "https://api.groupme.com/v3/bots/post"
@@ -53,12 +53,13 @@ EMOJI_MAPPING = {
 }
 
 def run_health_server():
-    """Run health check server in a separate thread"""
+    """Run health check server in a separate thread - Cloud Run compatible"""
     async def health_check(request):
         return web.json_response({
             "status": "healthy",
             "bot_ready": bot_status["ready"],
             "uptime": time.time() - bot_status["start_time"],
+            "platform": "Google Cloud Run",
             "features": {
                 "image_support": bool(GROUPME_ACCESS_TOKEN),
                 "reactions": bool(GROUPME_ACCESS_TOKEN and GROUPME_GROUP_ID),
@@ -78,28 +79,49 @@ def run_health_server():
             if data.get('group_id') == GROUPME_GROUP_ID:
                 await handle_groupme_webhook_event(data)
                 
-            return web.Response(status=200)
+            return web.json_response({"status": "success"})
         except Exception as e:
             print(f"❌ Error handling GroupMe webhook: {e}")
-            return web.Response(status=500)
+            return web.json_response({"error": str(e)}, status=500)
 
     async def start_server():
         app = web.Application()
+        
+        # Cloud Run requires health checks on root
         app.router.add_get('/', health_check)
         app.router.add_get('/health', health_check)
+        app.router.add_get('/_ah/health', health_check)  # Google App Engine style
         app.router.add_post('/groupme/webhook', groupme_webhook)
+        
+        # Add CORS for Cloud Run
+        app.router.add_options('/{path:.*}', lambda request: web.Response())
         
         runner = web.AppRunner(app)
         await runner.setup()
+        
+        # Cloud Run binds to 0.0.0.0 and uses PORT env var
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
-        print(f"🏥 Health check server running on port {PORT}")
-        print(f"🔗 GroupMe webhook endpoint: /groupme/webhook")
+        print(f"🌐 Health check server running on 0.0.0.0:{PORT} (Google Cloud Run)")
+        print(f"🔗 GroupMe webhook endpoint: https://your-service.a.run.app/groupme/webhook")
         
-        while True:
-            await asyncio.sleep(60)
+        # Keep server running
+        try:
+            while True:
+                await asyncio.sleep(3600)  # Check every hour
+        except asyncio.CancelledError:
+            print("🛑 Health server shutting down...")
+            await runner.cleanup()
 
-    asyncio.new_event_loop().run_until_complete(start_server())
+    # Create new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(start_server())
+    except Exception as e:
+        print(f"❌ Health server error: {e}")
+    finally:
+        loop.close()
 
 async def handle_groupme_webhook_event(data):
     """Handle incoming GroupMe webhook events"""
@@ -498,7 +520,8 @@ async def on_ready():
     print(f'😀 Reaction support: {"✅" if GROUPME_ACCESS_TOKEN and GROUPME_GROUP_ID else "❌"}')
     print(f'📊 Poll support: {"✅" if GROUPME_ACCESS_TOKEN and GROUPME_GROUP_ID else "❌"}')
     print(f'🧵 Threading support: ✅')
-    print(f'🚀 Enhanced bot with poll support is ready and running on Railway!')
+    print(f'☁️ Enhanced bot with poll support is ready and running on Google Cloud Run!')
+    print(f'🌐 Server running on port: {PORT}')
 
 @bot.event
 async def on_message(message):
@@ -508,10 +531,20 @@ async def on_message(message):
     if message.channel.id == DISCORD_CHANNEL_ID:
         print(f"📨 Processing message from {message.author.display_name}...")
         
-        # Check if message contains a poll
-        if message.poll:
+        # Debug: Check if message has poll
+        if hasattr(message, 'poll') and message.poll:
             print(f"📊 Poll detected from {message.author.display_name}")
-            await create_groupme_poll_from_discord(message.poll, message.author.display_name, message)
+            print(f"📊 Poll question: {message.poll.question.text}")
+            print(f"📊 Poll options: {[answer.text for answer in message.poll.answers]}")
+            try:
+                success = await create_groupme_poll_from_discord(message.poll, message.author.display_name, message)
+                if success:
+                    await message.add_reaction("✅")
+                else:
+                    await message.add_reaction("❌")
+            except Exception as e:
+                print(f"❌ Error creating GroupMe poll: {e}")
+                await message.add_reaction("❌")
             return
         
         # Store message for threading context
@@ -603,7 +636,7 @@ async def on_reaction_add(reaction, user):
 async def test_bridge(ctx):
     """Test command to verify the bridge is working"""
     if ctx.channel.id == DISCORD_CHANNEL_ID:
-        await send_to_groupme("🧪 Enhanced bridge test message with poll support from Railway!", "Bot Test")
+        await send_to_groupme("🧪 Enhanced bridge test message with poll support from Google Cloud Run!", "Bot Test")
         await ctx.send("✅ Test message sent to GroupMe!")
     else:
         await ctx.send("❌ This command only works in the monitored channel.")
@@ -612,22 +645,36 @@ async def test_bridge(ctx):
 async def test_poll(ctx):
     """Create a test poll to verify poll functionality"""
     if ctx.channel.id == DISCORD_CHANNEL_ID:
+        await ctx.send("Creating test poll...")
+        
         # Create a simple test poll
-        poll_options = [
-            discord.PollMedia(text="Option A", emoji="🅰️"),
-            discord.PollMedia(text="Option B", emoji="🅱️"),
-            discord.PollMedia(text="Option C", emoji="🇨")
-        ]
-        
-        poll = discord.Poll(
-            question="🧪 Test Poll: Which option do you prefer?",
-            options=poll_options,
-            multiple=False,
-            duration=1  # 1 hour
-        )
-        
-        await ctx.send(poll=poll)
-        await ctx.send("✅ Test poll created! It will be forwarded to GroupMe.")
+        try:
+            poll_options = [
+                discord.PollMedia(text="Red", emoji="🔴"),
+                discord.PollMedia(text="Blue", emoji="🔵"),
+                discord.PollMedia(text="Green", emoji="🟢")
+            ]
+            
+            poll = discord.Poll(
+                question="What's your favorite color?",
+                options=poll_options,
+                multiple=False,
+                duration=1  # 1 hour
+            )
+            
+            poll_message = await ctx.send(poll=poll)
+            await ctx.send("✅ Test poll created! Check if it appears in GroupMe.")
+            
+            # Manually trigger the poll creation for testing
+            try:
+                await create_groupme_poll_from_discord(poll, ctx.author.display_name, poll_message)
+                await ctx.send("🔄 Manually triggered GroupMe poll creation.")
+            except Exception as e:
+                await ctx.send(f"❌ Error creating GroupMe poll: {e}")
+                
+        except Exception as e:
+            await ctx.send(f"❌ Error creating Discord poll: {e}")
+            print(f"❌ Test poll error: {e}")
     else:
         await ctx.send("❌ This command only works in the monitored channel.")
 
@@ -712,6 +759,162 @@ async def manual_react(ctx, emoji, *, message_context=None):
                     await ctx.send("❌ Failed to send reaction to GroupMe")
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
+
+@bot.command(name='debug')
+async def debug_info(ctx):
+    """Show detailed debug information"""
+    if ctx.channel.id == DISCORD_CHANNEL_ID:
+        debug_msg = f"""🔍 **Debug Information (Google Cloud Run)**
+**Environment Variables:**
+• DISCORD_BOT_TOKEN: {'✅ Set' if DISCORD_BOT_TOKEN else '❌ Missing'}
+• GROUPME_BOT_ID: {'✅ Set' if GROUPME_BOT_ID else '❌ Missing'} 
+• GROUPME_ACCESS_TOKEN: {'✅ Set' if GROUPME_ACCESS_TOKEN else '❌ Missing'}
+• GROUPME_GROUP_ID: {'✅ Set' if GROUPME_GROUP_ID else '❌ Missing'}
+• DISCORD_CHANNEL_ID: {DISCORD_CHANNEL_ID}
+• PORT: {PORT}
+
+**Bot Status:**
+• Platform: Google Cloud Run ☁️
+• Bot Ready: {bot_status['ready']}
+• Current Channel ID: {ctx.channel.id}
+• Monitored Channel: {DISCORD_CHANNEL_ID}
+• Channel Match: {'✅' if ctx.channel.id == DISCORD_CHANNEL_ID else '❌'}
+
+**Active Data:**
+• Active Polls: {len(active_polls)}
+• Message Mappings: {len(message_mapping)}
+• Recent Messages: {len(recent_messages.get(DISCORD_CHANNEL_ID, []))}
+
+**API Endpoints:**
+• GroupMe Post URL: {GROUPME_POST_URL}
+• GroupMe Group: {GROUPME_GROUP_ID}
+• Health Server Port: {PORT}
+• Webhook URL: https://your-service.a.run.app/groupme/webhook
+
+**Cloud Run Notes:**
+• Make sure webhook URL points to your Cloud Run service
+• Health checks available at: /, /health, /_ah/health"""
+        
+        await ctx.send(debug_msg)
+    else:
+        await ctx.send("❌ This command only works in the monitored channel.")
+
+@bot.command(name='testgroupme')
+async def test_groupme_connection(ctx):
+    """Test basic GroupMe connection"""
+    if ctx.channel.id == DISCORD_CHANNEL_ID:
+        await ctx.send("Testing GroupMe connection...")
+        
+        test_message = "🧪 Direct GroupMe connection test"
+        payload = {
+            "bot_id": GROUPME_BOT_ID,
+            "text": test_message
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(GROUPME_POST_URL, json=payload) as response:
+                    if response.status == 202:
+                        await ctx.send("✅ GroupMe connection successful!")
+                    else:
+                        await ctx.send(f"❌ GroupMe connection failed. Status: {response.status}")
+                        response_text = await response.text()
+                        print(f"GroupMe API response: {response_text}")
+            except Exception as e:
+                await ctx.send(f"❌ GroupMe connection error: {e}")
+    else:
+        await ctx.send("❌ This command only works in the monitored channel.")
+    """Show recent messages for threading context"""
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        await ctx.send("❌ This command only works in the monitored channel.")
+        return
+    
+    recent = recent_messages.get(DISCORD_CHANNEL_ID, [])
+    if not recent:
+        await ctx.send("📭 No recent messages tracked.")
+        return
+    
+    message_list = []
+    for i, msg in enumerate(recent[-10:], 1):  # Show last 10 messages
+        content = msg['content'][:50] + "..." if len(msg['content']) > 50 else msg['content']
+        message_list.append(f"**{i}.** {msg['author']}: {content}")
+    
+    embed = discord.Embed(title="📋 Recent Messages", description="\n".join(message_list), color=0x00ff00)
+    await ctx.send(embed=embed)
+
+@bot.command(name='simplepoll')
+async def simple_poll_test(ctx, *, poll_text):
+    """Test poll creation with simple text format: !simplepoll Question? Option1, Option2, Option3"""
+    if ctx.channel.id != DISCORD_CHANNEL_ID:
+        await ctx.send("❌ This command only works in the monitored channel.")
+        return
+    
+    try:
+        # Parse the poll text
+        if '?' not in poll_text:
+            await ctx.send("❌ Format: `!simplepoll Question? Option1, Option2, Option3`")
+            return
+            
+        question, options_str = poll_text.split('?', 1)
+        question = question.strip()
+        
+        options = [opt.strip() for opt in options_str.split(',') if opt.strip()]
+        
+        if len(options) < 2:
+            await ctx.send("❌ Need at least 2 options. Format: `!simplepoll Question? Option1, Option2, Option3`")
+            return
+        
+        if len(options) > 10:
+            options = options[:10]  # Discord limit
+            
+        # Send poll to GroupMe first (simpler)
+        option_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        
+        poll_text_groupme = f"📊 Poll from {ctx.author.display_name}: {question}?\n\n"
+        
+        for i, option in enumerate(options):
+            emoji = option_emojis[i] if i < len(option_emojis) else f"{i+1}."
+            poll_text_groupme += f"{emoji} {option}\n"
+        
+        poll_text_groupme += f"\nReact with the corresponding number to vote! 🗳️"
+        
+        # Send to GroupMe
+        payload = {
+            "bot_id": GROUPME_BOT_ID,
+            "text": poll_text_groupme
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(GROUPME_POST_URL, json=payload) as response:
+                if response.status == 202:
+                    await ctx.send(f"✅ Poll sent to GroupMe: {question}?")
+                    
+                    # Also create Discord poll
+                    try:
+                        poll_options = []
+                        for i, option in enumerate(options):
+                            emoji = option_emojis[i] if i < len(option_emojis) else None
+                            poll_options.append(discord.PollMedia(text=option[:55], emoji=emoji))
+                        
+                        poll = discord.Poll(
+                            question=f"{question}?",
+                            options=poll_options,
+                            multiple=False,
+                            duration=24
+                        )
+                        
+                        await ctx.send(poll=poll)
+                        await ctx.send("✅ Discord poll created too!")
+                        
+                    except Exception as e:
+                        await ctx.send(f"⚠️ GroupMe poll sent, but Discord poll failed: {e}")
+                        
+                else:
+                    await ctx.send(f"❌ Failed to send poll to GroupMe. Status: {response.status}")
+                    
+    except Exception as e:
+        await ctx.send(f"❌ Error creating poll: {e}")
+        print(f"❌ Simple poll error: {e}")
 
 @bot.command(name='recent')
 async def show_recent(ctx):
