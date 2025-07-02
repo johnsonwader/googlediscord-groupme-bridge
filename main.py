@@ -28,11 +28,13 @@ GROUPME_POLLS_CREATE_URL = f"https://api.groupme.com/v3/poll/{GROUPME_GROUP_ID}"
 GROUPME_POLLS_SHOW_URL = "https://api.groupme.com/v3/poll"  # + /{poll_id}
 GROUPME_POLLS_LIST_URL = f"https://api.groupme.com/v3/groups/{GROUPME_GROUP_ID}/polls"
 
-# Discord bot setup
+# Discord bot setup with enhanced intents
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True  # Required for reading message content
 intents.reactions = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.guilds = True  # Required for guild operations
+intents.members = True  # Might be needed for some operations
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Global variables
 bot_status = {"ready": False, "start_time": time.time()}
